@@ -1,6 +1,6 @@
 package assn1
 
-//@author MJay Dheeraj(c) 2019
+// @author MJay Dheeraj(c) 2019
 // You MUST NOT change what you import.  If you add ANY additional
 // imports it will break the autograder, and we will be Very Upset.
 //
