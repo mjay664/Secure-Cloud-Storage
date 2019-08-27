@@ -222,10 +222,7 @@ type fileRecord struct {
 }
 
 type sharingRecord struct {
-	Fileowner     string
-	Filesize      int
-	Sharedkey     []byte
-	Inodelocation string
+
 }
 
 // StoreFile : function used to create a  file
