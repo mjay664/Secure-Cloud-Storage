@@ -1,6 +1,6 @@
 package assn1
 
-// @author MJay Dheeraj(c) 2019
+//@author MJay Dheeraj(c) 2019
 // You MUST NOT change what you import.  If you add ANY additional
 // imports it will break the autograder, and we will be Very Upset.
 //
@@ -116,9 +116,9 @@ func compare(data1 []byte, data2 []byte) (equal bool) {
 	return equal
 }
 
-func generatekey(key []byte, value string) (datakey string) {
+func generatekey(key []byte, value string, iv []byte) (datakey string) {
 	x := []byte(value)
-	userlib.CFBEncrypter(key, []byte("6295141.34537865")).XORKeyStream(x, x)
+	userlib.CFBEncrypter(key, iv).XORKeyStream(x, x)
 	datakey = string(x)
 	return datakey
 }
@@ -141,7 +141,7 @@ func storeiterater(data []byte, inode [][]byte, xref []byte, iv []byte, offset i
 		copy(tempiv, iv)
 
 		tempkey[0] = tempkey[0] ^ byte(offset)
-		iname := generatekey(tempkey, (u + filename + string(offset)))
+		iname := generatekey(tempkey, (u + filename + string(offset)), iv)
 
 		var letmebetemp = make([]byte, configBlockSize)
 		copy(letmebetemp, temp)
@@ -162,7 +162,7 @@ func storeiterater(data []byte, inode [][]byte, xref []byte, iv []byte, offset i
 		userlib.DatastoreSet(iname, temp)
 
 		inode = append(inode, []byte(iname))
-		//		fmt.Println([]byte(iname))
+		//fmt.Println([]byte(iname))
 		offset++
 	}
 	in = inode
@@ -182,13 +182,13 @@ func loadstorefilerecord(key []byte, iv []byte, datakey string, store bool, reco
 		filerecardhmac := xcc.Sum(nil)
 
 		fileracordbytes, err = encodemacanddata(fileracordbytes, filerecardhmac)
-		filekey := generatekey(key, datakey)
+		filekey := generatekey(key, datakey, iv)
 		userlib.CFBEncrypter(key, iv).XORKeyStream(fileracordbytes, fileracordbytes)
 		userlib.DatastoreSet(filekey, fileracordbytes)
 
 		return filerecord, err
 	}
-	filekey := generatekey(key, datakey)
+	filekey := generatekey(key, datakey, iv)
 	fileracordbytes, flag := userlib.DatastoreGet(filekey)
 	if flag == false {
 		return filerecord, errors.New("Somethig Wrong")
@@ -210,6 +210,7 @@ type User struct {
 	Argon2key  []byte
 	IV         []byte
 	Filecount  int
+	Password   string
 	Filerecord []string
 }
 
@@ -222,7 +223,10 @@ type fileRecord struct {
 }
 
 type sharingRecord struct {
-
+	Fileowner     string
+	Filesize      int
+	Sharedkey     []byte
+	Inodelocation string
 }
 
 // StoreFile : function used to create a  file
@@ -239,20 +243,24 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 	var x = make([]byte, 16)
 	copy(x, userdata.Argon2key)
 
-	inodekey := generatekey(x, (userdata.Username + filename + "inode"))
-
 	//creating filerecord
 	var filerecord fileRecord
 	filerecord.Fileowner = userdata.Username
 	filerecord.Sharingflag = false
+	filerecord.IV = userlib.RandomBytes(16)
+	filerecord.Sharedkey = userlib.RandomBytes(16)
+
+	inodekey := generatekey(x, (userdata.Username + filename + "inode"), filerecord.IV)
 	filerecord.Inodelocation = []byte(inodekey)
-	filerecord.IV = userlib.Argon2Key(userlib.RandomBytes(64), []byte(userdata.Username+filename), 16)
-	_, err = loadstorefilerecord(x, userdata.IV, userdata.Username+filename, true, filerecord)
+
+	y := make([]byte, 16)
+	copy(y, filerecord.Sharedkey)
+	_, err = loadstorefilerecord(userdata.Argon2key, userdata.IV, userdata.Username+filename, true, filerecord)
 
 	userdata.Filerecord = append(userdata.Filerecord, filename)
 	userdata.Filecount++
 
-	inode, err = storeiterater(data, inode, x, filerecord.IV, 0, userdata.Username, filename)
+	inode, err = storeiterater(data, inode, y, filerecord.IV, 0, userdata.Username, filename)
 
 	inodefinal, err := json.Marshal(inode)
 	xrc := userlib.NewHMAC(inodefinal)
@@ -261,7 +269,7 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 
 	inodefinal, err = encodemacanddata(inodefinal, inodehmac)
 
-	userlib.CFBEncrypter(x, filerecord.IV).XORKeyStream(inodefinal, inodefinal)
+	userlib.CFBEncrypter(y, filerecord.IV).XORKeyStream(inodefinal, inodefinal)
 	userlib.DatastoreSet(inodekey, inodefinal)
 
 	return
@@ -286,12 +294,7 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 
 	key := string(rec.Inodelocation)
 
-	if rec.Sharingflag {
-		copy(x, rec.Sharedkey)
-	} else {
-
-		copy(x, userdata.Argon2key)
-	}
+	copy(x, rec.Sharedkey)
 
 	inode, flag := userlib.DatastoreGet(key)
 	if flag == false {
@@ -302,7 +305,7 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 
 	inode, hmac, err := decodemacanddata(inode)
 
-	loadstorefilerecord(x, userdata.IV, userdata.Username+filename, true, rec)
+	loadstorefilerecord(userdata.Argon2key, userdata.IV, userdata.Username+filename, true, rec)
 
 	var inodes [][]byte
 	if compare(inode, hmac) == false || err != nil {
@@ -346,17 +349,14 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 	record, err = loadstorefilerecord(userdata.Argon2key, userdata.IV, userdata.Username+filename, false, record)
 
 	//fmt.Println(record.Fileowner)
-	if record.Sharingflag == true {
-		copy(x, record.Sharedkey)
-	} else {
-		copy(x, userdata.Argon2key)
-	}
+
+	copy(x, record.Sharedkey)
 
 	inode, locstatusflag := userlib.DatastoreGet(string(record.Inodelocation))
 	//fmt.Println(record.Inodelocation)
 
 	if locstatusflag == false {
-		return nil, err
+		return nil, errors.New("not found")
 	}
 
 	userlib.CFBDecrypter(x, record.IV).XORKeyStream(inode, inode)
@@ -367,7 +367,7 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 	}
 	var inodes [][]byte
 	err = json.Unmarshal(inode, &inodes)
-	//fmt.Println(inodes[offset])
+
 	//fmt.Println(inodes[offset])
 
 	decfilerec, flag := userlib.DatastoreGet(string(inodes[offset]))
@@ -409,10 +409,12 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 		pass := userlib.RandomBytes(8192)
 		sharekey := userlib.Argon2Key(pass, []byte(filename), 16)
 		rec.Sharingflag = true
-		rec.Sharedkey = sharekey
+		shareiv := userlib.RandomBytes(16)
 
 		var x = make([]byte, 16)
-		copy(x, userdata.Argon2key)
+		copy(x, rec.Sharedkey)
+
+		rec.Sharedkey = sharekey
 
 		//Loading inode...
 		inode, flag := userlib.DatastoreGet(string(rec.Inodelocation))
@@ -458,17 +460,21 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 
 			var tempforshare = make([]byte, 16)
 			copy(tempforshare, sharekey)
+			var tempivfori = make([]byte, 16)
+			copy(tempivfori, shareiv)
 
 			tempforshare[0] = tempforshare[0] ^ byte(i)
-			userlib.CFBEncrypter(tempforshare, tempiv).XORKeyStream(tempdata, tempdata)
+			tempivfori[0] = tempivfori[0] ^ byte(i)
+
+			userlib.CFBEncrypter(tempforshare, tempivfori).XORKeyStream(tempdata, tempdata)
 			userlib.DatastoreSet(string(inodes[i]), tempdata)
 
 		}
-
+		rec.IV = shareiv
 		userlib.CFBEncrypter(sharekey, rec.IV).XORKeyStream(inode, inode)
 		userlib.DatastoreSet(string(rec.Inodelocation), inode)
 
-		_, err = loadstorefilerecord(x, userdata.IV, userdata.Username+filename, true, rec)
+		_, err = loadstorefilerecord(userdata.Argon2key, userdata.IV, userdata.Username+filename, true, rec)
 	}
 
 	message := []byte(rec.Fileowner + " % " + string(rec.Sharedkey) + " % " + string(rec.Inodelocation) + " % " + string(rec.IV))
@@ -543,7 +549,9 @@ func (userdata *User) RevokeFile(filename string) (err error) {
 	var x = make([]byte, 16)
 	copy(x, rec.Sharedkey)
 
-	rec.Sharedkey = []byte{0}
+	var ivnew = userlib.RandomBytes(16)
+
+	rec.Sharedkey = userlib.RandomBytes(16)
 	rec.Sharingflag = false
 
 	//Loading inode...
@@ -586,16 +594,20 @@ func (userdata *User) RevokeFile(filename string) (err error) {
 		}
 
 		var tempforshare = make([]byte, 16)
-		copy(tempforshare, userdata.Argon2key)
+		copy(tempforshare, rec.Sharedkey)
+		var ivuse = make([]byte, 16)
+		copy(ivuse, ivnew)
 
 		tempforshare[0] = tempforshare[0] ^ byte(i)
-		userlib.CFBEncrypter(tempforshare, tempiv).XORKeyStream(tempdata, tempdata)
+		ivuse[0] = ivuse[0] ^ byte(i)
+		userlib.CFBEncrypter(tempforshare, ivuse).XORKeyStream(tempdata, tempdata)
 		userlib.DatastoreSet(string(inodes[i]), tempdata)
 	}
-	userlib.CFBEncrypter(userdata.Argon2key, rec.IV).XORKeyStream(inode, inode)
+	rec.IV = ivnew
+	userlib.CFBEncrypter(rec.Sharedkey, rec.IV).XORKeyStream(inode, inode)
 	userlib.DatastoreDelete(string(rec.Inodelocation))
 
-	key := generatekey(userdata.Argon2key, userdata.Username+filename+"changing location after revoke")
+	key := generatekey(userdata.Argon2key, userdata.Username+filename+"changing location after revoke", rec.IV)
 	rec.Inodelocation = []byte(key)
 
 	userlib.DatastoreSet(key, inode)
@@ -638,42 +650,49 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 		return userdataptr, errors.New("Error")
 	}
 
-	x := userlib.Argon2Key([]byte(password+username), []byte(username), 16)
+	x := userlib.Argon2Key([]byte(password+username+"6295141.34537865"), []byte(username), 32)
 
-	udskey := generatekey(x, username+password)
-
-	_, flag := userlib.DatastoreGet(udskey)
-	if flag == true {
-		return userdataptr, errors.New("User already exist")
-	}
+	udskey := generatekey(x, username+password, x[:16])
 
 	var user User
 
 	user.Username = username
 
-	user.Argon2key = x
+	user.Argon2key = userlib.RandomBytes(16)
 
 	user.Privatekey, err = userlib.GenerateRSAKey()
 
 	user.Filecount = 0
 
-	user.IV = userlib.Argon2Key([]byte(username+"6295141.34537865"), []byte(password), 16)
+	user.IV = userlib.RandomBytes(16)
+
+	user.Password = password
 
 	userdataptr = &user
 
 	userlib.KeystoreSet(username, userdataptr.Privatekey.PublicKey)
 
-	y, err := json.Marshal(userdataptr)
+	y, err := json.Marshal(user)
+
+	temp2 := make([]byte, len(y))
+	temp2 = append(temp2, []byte(x)...)
 
 	xdcc := userlib.NewHMAC(x)
-	_, err = xdcc.Write(y)
+	_, err = xdcc.Write(temp2)
 	temp := xdcc.Sum(nil)
 
 	final, err := encodemacanddata(y, temp)
 
-	userlib.CFBEncrypter(x, user.IV).XORKeyStream(final, final)
+	xrc := []byte(password + username + "6295141.34537865")
+	userlib.CFBEncrypter(x, xrc[:16]).XORKeyStream(final, final)
 
-	userlib.DatastoreSet(udskey, final)
+	xdcc = userlib.NewHMAC(x)
+	_, err = xdcc.Write(final)
+	temp = xdcc.Sum(nil)
+
+	userlib.DatastoreSet(udskey, temp)
+
+	userlib.DatastoreSet(hex.EncodeToString(x), final)
 
 	return userdataptr, err
 }
@@ -688,26 +707,44 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 		return nil, errors.New("unable to load file")
 	}
 
-	x := userlib.Argon2Key([]byte(password+username), []byte(username), 16)
+	x := userlib.Argon2Key([]byte(password+username+"6295141.34537865"), []byte(username), 32)
 
-	udskey := generatekey(x, username+password)
+	udskey := generatekey(x, username+password, x[:16])
 
-	encobj, b := userlib.DatastoreGet(udskey)
+	macc, b := userlib.DatastoreGet(udskey)
 
 	if b != true {
 		return nil, errors.New("something")
 	}
 
-	userlib.CFBDecrypter(x, userlib.Argon2Key([]byte(username+"6295141.34537865"), []byte(password), 16)).XORKeyStream(encobj, encobj)
+	encobj, b := userlib.DatastoreGet(hex.EncodeToString(x))
+
+	frcx := userlib.NewHMAC(x)
+	_, err = frcx.Write(encobj)
+	hmac := frcx.Sum(nil)
+
+	if userlib.Equal(hmac, macc) == false {
+		return nil, errors.New("Data is modified")
+	}
+
+	if b != true {
+		return nil, errors.New("something")
+	}
+
+	xrc := []byte(password + username + "6295141.34537865")
+	userlib.CFBDecrypter(x, xrc[:16]).XORKeyStream(encobj, encobj)
 
 	data, mac, err := decodemacanddata(encobj)
 
-	frcx := userlib.NewHMAC(x)
-	_, err = frcx.Write(data)
-	hmac := frcx.Sum(nil)
+	temp2 := make([]byte, len(data))
+	temp2 = append(temp2, []byte(x)...)
+
+	frcx = userlib.NewHMAC(x)
+	_, err = frcx.Write(temp2)
+	hmac = frcx.Sum(nil)
 
 	if err != nil {
-		return nil, err
+		return nil, errors.New("error")
 	}
 
 	var usr User
@@ -715,12 +752,11 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 
 		err = json.Unmarshal(data, &usr)
 		userdataptr = &usr
-		if userdataptr.Username != username || userlib.Equal(userdataptr.Argon2key, x) == false {
-
+		if userdataptr.Username != username || userdataptr.Password != password {
 			err = errors.New("error")
 			return nil, err
 		}
 		return userdataptr, err
 	}
-	return nil, err
+	return nil, errors.New("error")
 }
