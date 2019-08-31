@@ -84,6 +84,51 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 	return
 }
 
+//loadIV: function to load IV
+func loadIV(location string, key []byte, offset int) (iv [][]byte, err error) {
+
+	set, b := userlib.DatastoreGet(location)
+
+	if b == false {
+		return nil, errors.New("error")
+	}
+
+	userlib.CFBDecrypter(key, key).XORKeyStream(set, set)
+
+	set, hmac, err := decodemacanddata(set)
+
+	hash := userlib.NewHMAC(key)
+	hash.Write(set)
+	mac := hash.Sum(nil)
+
+	if userlib.Equal(hmac, mac) == false {
+		return nil, errors.New("error")
+	}
+
+	var finset [][]byte
+
+	json.Unmarshal(set, &finset)
+
+	iv = finset
+
+	return
+}
+
+func storeIV(location string, key []byte, ivset [][]byte) {
+	iv, _ := json.Marshal(ivset)
+
+	hash := userlib.NewHMAC(key)
+	hash.Write(iv)
+	hmac := hash.Sum(nil)
+
+	iv, _ = encodemacanddata(iv, hmac)
+
+	userlib.CFBEncrypter(key, key).XORKeyStream(iv, iv)
+
+	userlib.DatastoreSet(location, iv)
+
+}
+
 func encodemacanddata(data []byte, hmac []byte) (encoded []byte, err error) {
 	var en = [][]byte{data, hmac}
 
@@ -118,7 +163,9 @@ func compare(data1 []byte, data2 []byte) (equal bool) {
 
 func generatekey(key []byte, value string, iv []byte) (datakey string) {
 	x := []byte(value)
-	userlib.CFBEncrypter(key, iv).XORKeyStream(x, x)
+	//userlib.CFBEncrypter(key, iv).XORKeyStream(x, x)
+	x = append(x, key...)
+
 	datakey = string(x)
 	return datakey
 }
@@ -157,7 +204,9 @@ func storeiterater(data []byte, inode [][]byte, xref []byte, iv []byte, offset i
 
 		tempiv[0] = tempiv[0] ^ byte(offset)
 
-		userlib.CFBEncrypter(tempkey, tempiv).XORKeyStream(temp, temp)
+		fileiv := userlib.Argon2Key([]byte(iname), tempiv, 16)
+
+		userlib.CFBEncrypter(tempkey, fileiv).XORKeyStream(temp, temp)
 
 		userlib.DatastoreSet(iname, temp)
 
@@ -253,9 +302,11 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 	inodekey := generatekey(x, (userdata.Username + filename + "inode"), filerecord.IV)
 	filerecord.Inodelocation = []byte(inodekey)
 
+	useriv := userlib.Argon2Key([]byte(userdata.Username+filename), userdata.Argon2key, 16)
+
 	y := make([]byte, 16)
 	copy(y, filerecord.Sharedkey)
-	_, err = loadstorefilerecord(userdata.Argon2key, userdata.IV, userdata.Username+filename, true, filerecord)
+	_, err = loadstorefilerecord(userdata.Argon2key, useriv, userdata.Username+filename, true, filerecord)
 
 	userdata.Filerecord = append(userdata.Filerecord, filename)
 	userdata.Filecount++
@@ -288,9 +339,11 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 
 	var x = make([]byte, 16)
 
+	useriv := userlib.Argon2Key([]byte(userdata.Username+filename), userdata.Argon2key, 16)
+
 	//loading file record...
 	var rec fileRecord
-	rec, err = loadstorefilerecord(userdata.Argon2key, userdata.IV, userdata.Username+filename, false, rec)
+	rec, err = loadstorefilerecord(userdata.Argon2key, useriv, userdata.Username+filename, false, rec)
 
 	key := string(rec.Inodelocation)
 
@@ -305,7 +358,7 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 
 	inode, hmac, err := decodemacanddata(inode)
 
-	loadstorefilerecord(userdata.Argon2key, userdata.IV, userdata.Username+filename, true, rec)
+	loadstorefilerecord(userdata.Argon2key, useriv, userdata.Username+filename, true, rec)
 
 	var inodes [][]byte
 	if compare(inode, hmac) == false || err != nil {
@@ -346,7 +399,8 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 	}
 	//loading inode...
 	var record fileRecord
-	record, err = loadstorefilerecord(userdata.Argon2key, userdata.IV, userdata.Username+filename, false, record)
+	useriv := userlib.Argon2Key([]byte(userdata.Username+filename), userdata.Argon2key, 16)
+	record, err = loadstorefilerecord(userdata.Argon2key, useriv, userdata.Username+filename, false, record)
 
 	//fmt.Println(record.Fileowner)
 
@@ -378,7 +432,10 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 	x[0] = x[0] ^ byte(offset)
 	y := record.IV
 	y[0] = y[0] ^ byte(offset)
-	userlib.CFBDecrypter(x, y).XORKeyStream(decfilerec, decfilerec)
+
+	fileiv := userlib.Argon2Key(inodes[offset], y, 16)
+
+	userlib.CFBDecrypter(x, fileiv).XORKeyStream(decfilerec, decfilerec)
 
 	decfilerec, hmac, err := decodemacanddata(decfilerec)
 	//fmt.Println(decfilerec[4000:])
@@ -403,7 +460,8 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 func (userdata *User) ShareFile(filename string, recipient string) (msgid string, err error) {
 
 	var rec fileRecord
-	rec, err = loadstorefilerecord(userdata.Argon2key, userdata.IV, userdata.Username+filename, false, rec)
+	useriv := userlib.Argon2Key([]byte(userdata.Username+filename), userdata.Argon2key, 16)
+	rec, err = loadstorefilerecord(userdata.Argon2key, useriv, userdata.Username+filename, false, rec)
 
 	if rec.Sharingflag == false {
 		pass := userlib.RandomBytes(8192)
@@ -448,7 +506,8 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 				return "", errors.New("Something Wrong")
 			}
 
-			userlib.CFBDecrypter(tempkey, tempiv).XORKeyStream(tempdata, tempdata) // decrypt block i
+			fileiv := userlib.Argon2Key(inodes[i], tempiv, 16)
+			userlib.CFBDecrypter(tempkey, fileiv).XORKeyStream(tempdata, tempdata) // decrypt block i
 
 			tempdata1, datahmac, err := decodemacanddata(tempdata)
 			var letmebetemp = make([]byte, configBlockSize)
@@ -466,7 +525,8 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 			tempforshare[0] = tempforshare[0] ^ byte(i)
 			tempivfori[0] = tempivfori[0] ^ byte(i)
 
-			userlib.CFBEncrypter(tempforshare, tempivfori).XORKeyStream(tempdata, tempdata)
+			fileiv = userlib.Argon2Key(inodes[i], tempivfori, 16)
+			userlib.CFBEncrypter(tempforshare, fileiv).XORKeyStream(tempdata, tempdata)
 			userlib.DatastoreSet(string(inodes[i]), tempdata)
 
 		}
@@ -474,7 +534,7 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 		userlib.CFBEncrypter(sharekey, rec.IV).XORKeyStream(inode, inode)
 		userlib.DatastoreSet(string(rec.Inodelocation), inode)
 
-		_, err = loadstorefilerecord(userdata.Argon2key, userdata.IV, userdata.Username+filename, true, rec)
+		_, err = loadstorefilerecord(userdata.Argon2key, useriv, userdata.Username+filename, true, rec)
 	}
 
 	message := []byte(rec.Fileowner + " % " + string(rec.Sharedkey) + " % " + string(rec.Inodelocation) + " % " + string(rec.IV))
@@ -503,6 +563,8 @@ func (userdata *User) ReceiveFile(filename string, sender string, msgid string) 
 
 	message, signature, err := decodemacanddata([]byte(msgid))
 
+	useriv := userlib.Argon2Key([]byte(userdata.Username+filename), userdata.Argon2key, 16)
+
 	y, flag := userlib.KeystoreGet(sender)
 
 	if flag == false {
@@ -530,7 +592,7 @@ func (userdata *User) ReceiveFile(filename string, sender string, msgid string) 
 	rec.IV = []byte(marray[3])
 	rec.Sharingflag = true
 
-	_, err = loadstorefilerecord(userdata.Argon2key, userdata.IV, userdata.Username+filename, true, rec)
+	_, err = loadstorefilerecord(userdata.Argon2key, useriv, userdata.Username+filename, true, rec)
 
 	return err
 }
@@ -539,7 +601,9 @@ func (userdata *User) ReceiveFile(filename string, sender string, msgid string) 
 func (userdata *User) RevokeFile(filename string) (err error) {
 
 	var rec fileRecord
-	rec, err = loadstorefilerecord(userdata.Argon2key, userdata.IV, userdata.Username+filename, false, rec)
+	useriv := userlib.Argon2Key([]byte(userdata.Username+filename), userdata.Argon2key, 16)
+	rec, err = loadstorefilerecord(userdata.Argon2key, useriv, userdata.Username+filename, false, rec)
+
 	if rec.Sharingflag == false {
 		return errors.New("Something went wrong in Revoking file please try again")
 	}
@@ -582,8 +646,10 @@ func (userdata *User) RevokeFile(filename string) (err error) {
 
 		tempkey[0] = tempkey[0] ^ byte(i)
 		tempiv[0] = tempiv[0] ^ byte(i)
+		fileiv := userlib.Argon2Key(inodes[i], tempiv, 16)
+
 		tempdata, _ := userlib.DatastoreGet(string(inodes[i]))                 //get block i
-		userlib.CFBDecrypter(tempkey, tempiv).XORKeyStream(tempdata, tempdata) // decrypt block i
+		userlib.CFBDecrypter(tempkey, fileiv).XORKeyStream(tempdata, tempdata) // decrypt block i
 
 		tempdata1, datahmac, err := decodemacanddata(tempdata)
 		var letmebetemp = make([]byte, configBlockSize)
@@ -600,7 +666,9 @@ func (userdata *User) RevokeFile(filename string) (err error) {
 
 		tempforshare[0] = tempforshare[0] ^ byte(i)
 		ivuse[0] = ivuse[0] ^ byte(i)
-		userlib.CFBEncrypter(tempforshare, ivuse).XORKeyStream(tempdata, tempdata)
+		fileiv = userlib.Argon2Key(inodes[i], ivuse, 16)
+
+		userlib.CFBEncrypter(tempforshare, fileiv).XORKeyStream(tempdata, tempdata)
 		userlib.DatastoreSet(string(inodes[i]), tempdata)
 	}
 	rec.IV = ivnew
@@ -611,7 +679,7 @@ func (userdata *User) RevokeFile(filename string) (err error) {
 	rec.Inodelocation = []byte(key)
 
 	userlib.DatastoreSet(key, inode)
-	_, err = loadstorefilerecord(userdata.Argon2key, userdata.IV, userdata.Username+filename, true, rec)
+	_, err = loadstorefilerecord(userdata.Argon2key, useriv, userdata.Username+filename, true, rec)
 
 	return err
 }
