@@ -84,51 +84,6 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 	return
 }
 
-//loadIV: function to load IV
-func loadIV(location string, key []byte, offset int) (iv [][]byte, err error) {
-
-	set, b := userlib.DatastoreGet(location)
-
-	if b == false {
-		return nil, errors.New("error")
-	}
-
-	userlib.CFBDecrypter(key, key).XORKeyStream(set, set)
-
-	set, hmac, err := decodemacanddata(set)
-
-	hash := userlib.NewHMAC(key)
-	hash.Write(set)
-	mac := hash.Sum(nil)
-
-	if userlib.Equal(hmac, mac) == false {
-		return nil, errors.New("error")
-	}
-
-	var finset [][]byte
-
-	json.Unmarshal(set, &finset)
-
-	iv = finset
-
-	return
-}
-
-func storeIV(location string, key []byte, ivset [][]byte) {
-	iv, _ := json.Marshal(ivset)
-
-	hash := userlib.NewHMAC(key)
-	hash.Write(iv)
-	hmac := hash.Sum(nil)
-
-	iv, _ = encodemacanddata(iv, hmac)
-
-	userlib.CFBEncrypter(key, key).XORKeyStream(iv, iv)
-
-	userlib.DatastoreSet(location, iv)
-
-}
-
 func encodemacanddata(data []byte, hmac []byte) (encoded []byte, err error) {
 	var en = [][]byte{data, hmac}
 
@@ -272,10 +227,6 @@ type fileRecord struct {
 }
 
 type sharingRecord struct {
-	Fileowner     string
-	Filesize      int
-	Sharedkey     []byte
-	Inodelocation string
 }
 
 // StoreFile : function used to create a  file
