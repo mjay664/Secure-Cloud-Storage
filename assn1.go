@@ -84,6 +84,7 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 	return
 }
 
+// Helper function: Append hmac with data , and return json (in byte form obviously)
 func encodemacanddata(data []byte, hmac []byte) (encoded []byte, err error) {
 	var en = [][]byte{data, hmac}
 
@@ -91,6 +92,7 @@ func encodemacanddata(data []byte, hmac []byte) (encoded []byte, err error) {
 	return
 }
 
+// Helper function: From marshalled data+hmac it will return unmarshalled data and hmac seperately 
 func decodemacanddata(encoded []byte) (data []byte, mac []byte, err error) {
 	var de [][]byte
 
@@ -103,6 +105,7 @@ func decodemacanddata(encoded []byte) (data []byte, mac []byte, err error) {
 	return data, mac, nil
 }
 
+// Helper function: Used in condition checking , mainly to verify whether calculated HMAC is equal to the stored HMAC
 func compare(data1 []byte, data2 []byte) (equal bool) {
 	equal = false
 	rc := userlib.NewHMAC(data1)
@@ -116,6 +119,7 @@ func compare(data1 []byte, data2 []byte) (equal bool) {
 	return equal
 }
 
+// Helper function : Return UUID whenever called.
 func generatekey(key []byte, value string, iv []byte) (datakey string) {
 	x := []byte(value)
 	//userlib.CFBEncrypter(key, iv).XORKeyStream(x, x)
@@ -125,13 +129,13 @@ func generatekey(key []byte, value string, iv []byte) (datakey string) {
 	return datakey
 }
 
+// Helper function : Used in store file and append file function to iterate through data blocks
 func storeiterater(data []byte, inode [][]byte, xref []byte, iv []byte, offset int, u string, filename string) (in [][]byte, err error) {
 
 	var x = make([]byte, 16)
 	copy(x, xref)
 
 	r := (len(data) / configBlockSize)
-	//fmt.Println((len(data) / configBlockSize))
 	for i := 0; i < r; i++ {
 
 		temp := data[:configBlockSize]
@@ -174,6 +178,7 @@ func storeiterater(data []byte, inode [][]byte, xref []byte, iv []byte, offset i
 	return in, err
 }
 
+// Helper function: Used in almost every function where we are loading file-record , as well as storing it back
 func loadstorefilerecord(key []byte, iv []byte, datakey string, store bool, record fileRecord) (filerecord fileRecord, err error) {
 
 	err = errors.New("HMAC comparision failed , found different HMACs")
@@ -226,6 +231,7 @@ type fileRecord struct {
 	Sharedkey     []byte
 }
 
+// We have merged important contents of this structure in fileRecord struct itself
 type sharingRecord struct {
 }
 
